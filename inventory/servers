@@ -1,0 +1,11 @@
+[kernelcares:children]
+staging
+production
+
+[staging]
+kce-test-c7-01
+kce-test-c7-02
+
+[production]
+kce-prod-c7-01
+kce-prod-c7-02

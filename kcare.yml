@@ -1,0 +1,111 @@
+---
+- name: setup eportal feeds
+  hosts: localhost
+  become: true
+  gather_facts: false
+  no_log: true
+
+  tasks:
+  - name: create eportal feeds
+    tags: setup
+    loop: "{{ eportal_feeds }}"
+    ignore_errors: true
+    ansible.builtin.command: kc.eportal feed -a {{ item }}
+
+  - name: create registration keys
+    tags: setup
+    loop: "{{ eportal_feeds }}"
+    ignore_errors: true
+    ansible.builtin.command: kc.eportal key -a --feed {{ item }} {{ item }}
+
+- name: register servers with eportal
+  hosts: kernelcares
+  gather_facts: false
+  become: true
+
+  tasks:
+  - name: install kernelcare agent
+    tags: setup
+    ansible.builtin.shell: curl -s "{{ eportal_api }}"/install-kernelcare | bash
+
+  - name: register kernelcare agent
+    tags: setup
+    ansible.builtin.command: kcarectl --register "{{ eportal_key }}"
+
+- name: enable kernelcare patchset
+  hosts: localhost
+  gather_facts: false
+  module_defaults:
+    ansible.builtin.uri:
+      method: POST
+      user: "{{ eportal_user }}"
+      password: "{{ eportal_pass }}"
+      force_basic_auth: yes
+  no_log: false
+  vars:
+    kcare_feed: '{{ feed | default("none") }}'
+    kcare_patchset: '{{ patchset | default("none") }}'
+
+  tasks:
+  - name: determine patchset
+    block:
+    - name: get patchsets list
+      when: kcare_feed != 'none' and kcare_patchset == 'latest'
+      register: http_response
+      ansible.builtin.uri:
+        url: "{{ eportal_api }}/admin/api/patchsets?feed={{ kcare_feed }}"
+        method: GET
+
+    - name: parse the json response
+      when: http_response.skipped is not defined
+      set_fact:
+        json_data: "{{ http_response.json }}"
+
+    - name: extract the latest patchset name
+      when: http_response.json is defined and kcare_patchset == 'latest'
+      set_fact:
+        kcare_patchset: "{{ http_response.json.result[-1].patchset }}"
+
+  - name: enable patchset
+    block:
+    - name: undeploy downto patchset
+      when: kcare_feed != 'none' and kcare_patchset != 'none'
+      ansible.builtin.uri:
+        url: "{{ eportal_api }}/admin/api/patchsets/manage?feed={{ kcare_feed }}&patchset={{ kcare_patchset }}&action=undeploy-downto"
+
+    - name: enable upto patchset
+      when: kcare_feed != 'none' and kcare_patchset != 'none'
+      ansible.builtin.uri:
+        url: "{{ eportal_api }}/admin/api/patchsets/manage?feed={{ kcare_feed }}&patchset={{ kcare_patchset }}&action=enable-upto"
+
+    - name: wait for patchset({{ kcare_patchset }}) to become 'enabled'
+      when: kcare_feed != 'none' and kcare_patchset != 'none'
+      register: http_response
+      vars:
+        query_string: "[?patchset=='{{ kcare_patchset }}'].status"
+      until: http_response.json.result | json_query(query_string) | first == 'enabled'
+      retries: 60
+      delay: 5
+      ansible.builtin.uri:
+        url: "{{ eportal_api }}/admin/api/patchsets?feed={{ kcare_feed }}"
+        method: GET
+
+- name: apply kernelcare patch
+  hosts: '{{ feed | default("staging") }}'
+  gather_facts: false
+  become: true
+  vars:
+    kcare_feed: '{{ feed | default("none") }}'
+    kcare_rollback: '{{ rollback | default("no") }}'
+
+  tasks:
+  - name: disable kernelcare patch first
+    when: kcare_feed != 'none' and kcare_rollback == 'yes'
+    ignore_errors: true
+    ansible.builtin.command: kcarectl --unload
+
+  - name: enable kernelcare patch
+    when: kcare_feed != 'none'
+    ignore_errors: true
+    ansible.builtin.command: kcarectl --update
+

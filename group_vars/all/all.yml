@@ -1,0 +1,6 @@
+eportal_api:  http://<eportal ip address>
+eportal_user: <eportal account name>
+eportal_pass: <eportal account password>
+eportal_feeds:
+  - staging
+  - production
